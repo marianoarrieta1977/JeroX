@@ -1,0 +1,60 @@
+# Def Variables
+window = 60
+returns = np.log(df.astype(float)).diff().dropna()
+s_scores = pd.DataFrame(index=returns.iloc[window-1:].index,
+                        columns=tickers).astype(float)
+
+# Prep Data
+for i in returns:
+    y = returns[i].dropna()
+    X = returns.drop(i, axis=1).dropna(axis=1)
+    X = X.loc[y.index]
+
+    for t in y.index[window-1:]:
+        # Objective
+        y1 = y.loc[:t].iloc[-window:]
+        y1 = (y1-y1.mean(axis=0))/y1.std(axis=0)
+
+        # Standardize the returns
+        ret = X.loc[:t].iloc[-window:]
+        mean = ret.mean(axis = 0)
+        std = ret.std(axis = 0)
+        std_ret = (ret - mean)/std
+
+        # PCA Process
+        X_pca = PCA(n_components=10).fit(std_ret)
+        weight = pd.DataFrame(X_pca.components_)
+        weight.columns = std.index
+        weight = weight/std
+        eigen_rets = np.dot(ret, weight.transpose())
+
+        # Sparse OLS
+        model1 = LassoCV().fit(eigen_rets, y1)
+        res = (y1 - model1.predict(eigen_rets))
+
+        # OU Process => limited assets to select by MR-speed
+        cum_res = res.cumsum()
+        b = pd.Series(cum_res).autocorr() #auc
+        temp = (cum_res-np.roll(cum_res, 1)* b)[1:]
+        a = temp.mean() #drift
+        cosi = temp - a
+        m = a/(1-b)
+        sigma_eq = math.sqrt(cosi.var()/(1-b*b))
+        s_score = -m/sigma_eq
+        s_scores.loc[t,i] = s_score
+
+# Rank SScores
+ss = s_scores.reindex(returns.index)
+rnk = ss.rank(ascending=False, axis=1)
+rnk_w = rnk.subtract(rnk.mean(axis=1), axis=0)/100
+
+# Calculate PNL
+pnl_gross = returns.mul(rnk_w.shift((1)), axis=1)
+costs = 0.0001 * abs(rnk_w.diff())
+pnl_net = pnl_gross - costs
+
+# Plot
+plt.plot((1+pnl_net.sum(axis=1)).cumprod(), label='Strat')
+plt.title('Performance', fontweight='bold')
+plt.ylabel('Compounded Return')
+plt.show()
